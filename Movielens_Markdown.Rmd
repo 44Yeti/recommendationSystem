@@ -1,0 +1,589 @@
+---
+title: "Movielens Project"
+author: "Yeti44"
+date: "3 3 2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+## Executive Summary
+The task is to establish a movie recommendation algorithm based on the MovieLens dataset.
+This dataset consists of millions of movie ratings of thousands of movies from thousands of users.
+The goal is it to predict the movie ratings with an "root-mean-square-error" (RMSE) below **0.86490**.
+For this exercise we used the [10M MovieLens dataset](https://grouplens.org/datasets/movielens/10m/) version to make computation easier possible.
+The calculations are done as approximations and not with a predefined algorithm like e.g. glm() function as this would have crashed my computer.
+The approach was to build an algorithm following this logic: $Y_{i,u,c} = \mu +b_{i}+b_{u}+b_{?}+\epsilon_{i,u,c}$ where Y~i,u,c~ are the predicted ratings based on $\mu$, the movie bias (b~i~), the user bias (b~u~), the bias out of findings from Rating-Matrix decomposition (b~?~) and the non-further specified remaining error ($\epsilon$). To get to the final version of this algorithm (incl. final validation) I followed the following five steps:
+
+1. Generate the edx dataset: Download and wrangle "10M Movilens" data. Splitt it into a dataset to work with - the "edx" dataset - and a validation dataset. This step was done by HarvardX for us.
+2. Understand, wrangle and analyse edx dataset
+3. Build a train- and test dataset out of edx dataset and define the RMSE function
+4. Building the algorithm by a step by step approach:
+    i) Just use $\mu+\epsilon$
+    ii) add movie bias (b~i~) to the equation
+    iii) add user bias (b~u~) to the equation
+    iv) do improvements thanks to regularization
+    v) Adding a bias we calculate out of the decomposition of the Rating-Matrix
+5. Validate algorithm against validation dataset and discuss result  
+
+The knowledge/information used - beside different internet researches - is mainly from the material we learned in the module 8 of the HarvardX Data Science course series, recommenderlab documentation [^1], and two further publications one about singular value decomposition [^2] (SVD) and a tutorial about principal component analysis [^3] (PCA).
+ 
+The RMSE value the algorithm achieved running against validation dataset is **0.86446** which means the final algorithm is good enough to achieve the goal set.
+  
+## Method/Analysis
+### Generate edx dataset
+The code to generate the edx dataset was provided by HarvardX. As there is only one minor change (added three additional libraries) it will not be commented further. In the .Rmd version of this document the code will be included.
+```{r starting code given by HarvardX, eval=TRUE, include=FALSE}
+#####################################
+# Create edx set, validation set ####
+#####################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+#Add 2 libraries to the default code as we will need them later
+if(!require(recommenderlab)) install.packages("recommenderlab", repos = "http://cran.us.r-project.org")
+if(!require(scales)) install.packages("scales", repos = "http://cran.us.r-project.org")
+if(!require(scales)) install.packages("tinytex", repos = "http://cran.us.r-project.org")
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding")
+# if using R 3.5 or earlier, use `set.seed(1)` instead
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+```
+
+```{r temporary, eval=FALSE}
+library(tidyverse)
+library(caret)
+library(data.table)
+library(recommenderlab)
+library(scales)
+```
+
+
+```{r temporary1, include=FALSE, cache=FALSE, eval=FALSE}
+load("C:/Users/fure/OneDrive/Projects/R/Uebungen/Module9_Capstone/RData/edx.rdata")
+```
+  
+### Understand, clean and analyse edx dataset
+First we will have a look at edx dataset to get a "look and feel" for it:
+```{r , echo=TRUE}
+head(edx)
+dim(edx)
+class(edx)
+```
+So we have a `r class(edx)` with `r nrow(edx)` rows and `r ncol(edx)` columns, which is by the way composed of `r n_distinct(edx$movieId)` different movies and `r n_distinct(edx$userId)` different users.  
+  
+Next we will check if there are any zeros or "NA" in the dataset:
+```{r , echo=TRUE}
+edx %>% filter(rating == 0) %>% tally()
+sum(is.na(edx))
+```
+
+As everything looks quite good for this exercise no further data cleaning would be necessary. Nevertheless it could be handy for future work to separate the movie title from the release year - so that we get a data frame with 7 columns. Even so  for better readability there is an adjustment of the column sequence. After these changes the the new data.frame looks like this (new dataset name is "edx1"):
+```{r , include=TRUE}
+#Split title column in two columns: "title" and "year" and adjust classes of col.
+edx1 <- edx %>% extract(title, c("title","year"), regex = "^(.*)\\s[(](\\d{4})[)]$")
+edx1 <- edx1 %>% mutate(year = as.integer(year), genres = as.factor(genres))
+
+#Better readability by bringing columns closer together which belong together
+edx1 <- edx1[,c(2,5,6,7,1,3,4)]
+head(edx1)
+```
+  
+  
+Now let us do some visualization to get more insights about the data:  
+```{r gap rated movies, fig.cap="Image 1: Visualization of the Gaps in movie ratings shown by a random sample of 100 users"}
+users <- sample(unique(edx1$userId), 100)
+rafalib::mypar()
+edx1 %>% filter(userId %in% users) %>% 
+  select(userId, movieId, rating) %>%
+  mutate(rating = 1) %>%
+  spread(movieId, rating) %>% select(sample(ncol(.), 100)) %>% 
+  as.matrix() %>% t(.) %>%
+  image(1:100, 1:100,. , xlab="Movies", ylab="Users")
+abline(h=0:100+0.5, v=0:100+0.5, col = "grey")
+```
+  
+  
+```{r rated movies, fig.cap="Image 2: Distribution of number of movie ratings"}
+#First insights: Some movies get more rated then others:
+edx1 %>% 
+  dplyr::count(movieId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 30, color = "black") + 
+  scale_x_log10() + 
+  ggtitle("Movies") +
+  labs(x = "Amount of ratings movies got", y="Amount of movies per 'amount of rating'-category")
+```
+  
+Image 1 and 2 show in different ways the "gaps" we have in the ratings, meaning that by far not all movies got rated by all of the users. This we have to take into consideration when we build the algorithm as this could adulterate our results. For example when ratings far away from the average are backed only from few users or when we want to work with a userId/movieId/rating-Matrix to do factorization.  
+  
+Concerning the ratings it seems that people do prefere the integer values. Even so there is a clear tendency towards ratings above the scale average of 2.5 towards a rating between "above average to good" (3-4):  
+```{r rated by user, fig.cap="Image 3: Distribution of ratings"}
+#First insights: Some users are rating more than others:
+edx1 %>% 
+  ggplot(aes(rating)) +
+  geom_histogram(binwidth = 0.5, color = "black") + 
+  ggtitle("Distribution of Ratings") +
+  labs(x = "Rating scale", y="Amount of entries per Rating option")
+```
+   
+
+### Build a train- and test dataset + define RMSE function
+
+With the `createDataPartition` function we build us two datasets out of the edx1 dataset. One is the edx_train set which we will use to train/build our algorithm. The other is edx_test against which we will test the prediction capabilities of our algorithm throughout the different steps.  
+```{r building datasets, include=FALSE}
+#Split edx1 dataset in a edx_train and edx_test set - use 15% of data for test set
+set.seed(15, sample.kind="Rounding")
+# if using R 3.5 or earlier, use `set.seed(1)` instead
+test_index <- createDataPartition(y = edx1$rating, times = 1, p = 0.15, list = FALSE)
+edx_train <- edx1[-test_index,]
+temp <- edx1[test_index,]
+
+# Make sure userId and movieId in edx_test set are also in edx_train set
+edx_test <- temp %>% 
+  semi_join(edx_train, by = "movieId") %>%
+  semi_join(edx_train, by = "userId")
+
+# Add rows removed from edx_test set back into edx_train set
+removed <- anti_join(temp, edx_test)
+edx_train <- rbind(edx_train, removed)
+
+#remove unnessecary objects
+rm(test_index, temp, removed, edx1)
+```
+
+Following we look at the dimensions of the two datasets - we will see that edx_train set consists of about 85% of the original edx1 dataset and edx_test of 15% accordingly:
+```{r dim datasets, echo=TRUE}
+dim(edx_train)
+dim(edx_test)
+```
+
+
+Last but not least we define the RMSE function before we can start building the algorithm:
+```{r RMSE function, echo=TRUE}
+
+RMSE <- function(predicted_ratings, true_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+  
+### Building the algorithm step by step
+
+The algorithm will follow this logic: $Y_{i,u,c} = \mu +b_{i}+b_{u}+b_{c}+\epsilon_{i,u,c}$. We will build the algorithm in a step by step approach so we can compare results (RMSE against edx_test) after every step.  
+#### step 1: Starting with "mu"
+To start with we just predict the ratings by setting them on the rating average from edx_train $Y = \mu$:
+```{r calculate mu, echo=TRUE}
+#Calculating mu 
+mu <- mean(edx_train$rating)
+mu
+```
+
+This results in the following RMSE value:
+```{r 1st RMSE table, include=TRUE}
+#Calculate RMSE for 1st intermediate result based on mu:
+Mu_rating <- edx_test %>% 
+  mutate(pred = mu) %>%
+  .$pred
+
+RMSE_InterOne <- RMSE(Mu_rating, edx_test$rating)
+
+#Visualize the RMSE result:
+rmse_results <- data_frame(method="Mu", RMSE = RMSE_InterOne, Improvement = 0, )
+rmse_results %>% knitr::kable()
+```
+ 
+#### Step 2: Adding b~i~
+As a next step we add the movie bias (b~i~) to the algorithm. For this we take the average of each movie "corrected" by mu:  
+```{r calculate bi, echo=TRUE}
+bi_avg <- edx_train %>% 
+  group_by(movieId) %>%
+  summarize(b_i = mean(rating - mu), n = n())
+```
+
+Including b~i~ RMSE gets the following value:  
+```{r 2nd RMSE table, include=TRUE}
+#Calculate RMSE for 2nd intermediate result:
+MuBi_rating <- edx_test %>% 
+  left_join(bi_avg, by='movieId') %>% 
+  mutate(pred = mu + b_i) %>%
+  .$pred
+
+RMSE_InterTwo <- RMSE(MuBi_rating, edx_test$rating)
+
+#Improvement:
+Imp <- RMSE_InterOne-RMSE_InterTwo
+
+#Visualize the RMSE result:
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Mu, b_i",
+                                     RMSE = RMSE_InterTwo, Improvement = Imp ))
+rmse_results %>% knitr::kable()
+```
+
+As we can see there is a substantial improvement of `r percent(Imp/RMSE_InterOne)` in the RMSE so the bias per movie seems to be somehow big. It seems by some movies people were +/- in agreement to give them a rating clearly above or below the overall rating average - as if a movie got a controversial rating (equally good and bad ratings) the deduction of mu would have "corrected" the effect.  
+  
+#### Step 3: Adding b~u~
+
+Now we add the User bias (b~u~):
+```{r calculate bu, echo=TRUE}
+bu_avg <- edx_train %>% 
+  left_join(bi_avg, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+```
+
+```{r 3rd RMSE table, include=TRUE}
+#Calculate RMSE for 3rd intermediate result:
+MuBiBu_rating <- edx_test %>% 
+  left_join(bi_avg, by='movieId') %>% 
+  left_join(bu_avg, by='userId') %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  .$pred
+
+RMSE_InterThree <- RMSE(MuBiBu_rating, edx_test$rating)
+
+#Improvement:
+Imp <- RMSE_InterTwo-RMSE_InterThree
+
+#Visualize the RMSE result:
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Mu, b_i, b_u",
+                                     RMSE = RMSE_InterThree, Improvement = Imp ))
+rmse_results %>% knitr::kable()
+```
+
+Also adding b~u~ brought us a step forward. We achieved a further improvement of RMSE value by `r percent(Imp/RMSE_InterTwo)` (against edx_test dataset).  
+  
+#### Step 4: Adding regularization
+
+As a next step we look at regularization. So we want to penalize large deviations of the average caused from small sample sizes. But before doing the calculations we want to do a quick analysis of the data to check if such an effect could exist.  
+To do so we want to have a special look at the residuals still bigger than |1| after deducting mu, b~i~ and b~u~:  
+```{r show effect of small samples, include=TRUE, fig.cap="Image 4: Amount of ratings by movies with residuals > |1|"}
+#prepare train set
+temp <- edx_train %>% 
+  left_join(bi_avg, by="movieId") %>%
+  left_join(bu_avg, by='userId') %>%
+  mutate(residual = rating - (mu+b_i+b_u)) 
+
+#Preparation for later median calc. of total edx_train set:
+Movie_Count <- edx_train %>% dplyr::count(movieId)
+
+#Preparation for later median calc. of dataset with residuals > |1|
+temp_2 <- filter(temp,abs(temp$residual)>1)
+Movie_Count_s <- temp_2 %>% dplyr::count(movieId)
+
+#Visualize the effect of low amount of movie-ratings and high residuals (scales package required)
+temp_3 <- temp_2 %>% group_by(movieId) %>% summarize(n=n(), residual=mean(abs(residual))) %>% 
+  arrange(desc(abs(residual)))
+
+temp_3 %>% ggplot(aes(residual,n)) + 
+  geom_point() + 
+  scale_y_continuous(trans = log2_trans()) + 
+  geom_line(aes(y=median(Movie_Count$n)), color="red") +
+  geom_line(aes(y=median(Movie_Count_s$n)))+
+  ggtitle("Distribution movie ratings (residuals > |1|)") +
+  geom_text(aes(x = 3, y = 40, 
+                label = paste("Median of residuals > |1| =",paste(median(Movie_Count_s$n)))))+
+  geom_text(aes(x = 3, y = 140 ,
+                label = paste("Median of total edx_train set =",paste(median(Movie_Count$n))))) 
+```
+  
+We see that the amount of ratings a movie got with residual still bigger |1| are clearly lower compared to the median of the whole training dataset (red line). Similar we can observe when we sort it by userId instead of movieId. Therefore it is probably reasonable to do a regularization.  
+First we calculate the optimal choice of lambda.
+```{r calculate lambda, include=TRUE, fig.cap="Image 5: RMSE development with differnt lambdas"}
+lambdas <- seq(0, 15, 0.5)
+rmses <- sapply(lambdas, function(lambda){
+  bi_reg <- edx_train %>%
+    group_by(movieId) %>%
+    summarize(b_i_reg = sum(rating - mu)/(n()+lambda))
+  bu_reg <- edx_train %>% 
+    left_join(bi_reg, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u_reg = sum(rating - b_i_reg - mu)/(n()+lambda))
+  predicted_ratings <- 
+    edx_test %>% 
+    left_join(bi_reg, by = "movieId") %>%
+    left_join(bu_reg, by = "userId") %>%
+    mutate(pred = mu + b_i_reg + b_u_reg) %>%
+    .$pred
+  return(RMSE(predicted_ratings, edx_test$rating))
+})
+
+qplot(lambdas, rmses)  
+
+lambda <- lambdas[which.min(rmses)]
+```
+  
+Now we recalculate the movie- and user bias "penalized" with optimal lambda (`r lambda`) - the new variables we will call b~i~_reg and b~u~_reg.
+```{r calculate b_i_reg and b_u_reg, echo=TRUE}
+#Calculating b_i_reg based on best lambda value:
+bi_reg_avg <- edx_train %>% 
+  group_by(movieId) %>%
+  summarize(b_i_reg = sum(rating - mu)/(n()+lambda))
+
+#Calculating b_u_reg based on best lambda value:
+bu_reg_avg <- edx_train %>% 
+  left_join(bi_reg_avg, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u_reg = sum(rating - b_i_reg - mu)/(n()+lambda))
+```
+  
+If we now generate RMSE based on the regularized biases we get the following values:
+```{r 4th RMSE table}
+Reg_rating <- edx_test %>% 
+  left_join(bi_reg_avg, by='movieId') %>% 
+  left_join(bu_reg_avg, by='userId') %>%
+  mutate(pred = mu + b_i_reg + b_u_reg) %>%
+  .$pred
+
+RMSE_InterFour <- RMSE(Reg_rating, edx_test$rating)
+
+#Improvement:
+Imp <- RMSE_InterThree-RMSE_InterFour
+
+#Visualize the RMSE result:
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="'Regularized'",
+                                     RMSE = RMSE_InterFour, Improvement = Imp ))
+rmse_results %>% knitr::kable()
+```
+  
+With a further improvement of RMSE score of `r percent(Imp/RMSE_InterThree)` this step did not bring us too much of an additional benefit. But it is also to say that we are at a stage with our algorithm where it gets harder and harder to find further improvements.
+
+#### Step 5: Matrix decomposition
+
+In this next step we want to try out two different approaches by decomposing the Rating-Matrix.  
+
+1. Add a bias based on PCA. Thanks to this we should be able to consider patterns inbetween movies and/or users in our algorithm. We call this bias "cluster bias" (b~c~)
+2. With support of SVD we will rebuild the Rating-Matrix in a way that the Rating-Matrix is completely filled out (no empty values) and then we take the mean of every movie. We will call this bias b~i2~
+
+To anticipate one point already now: The inital idea was to this in a sequence - so first calculate b~c~ and include it in the algorithm and then based on this rebuild the Rating-Matrix and do step 2. But it showed in my testings that this does only bring the second best result. The best result was achieved by just including one of the two new biases (b~c~, b~i2~) - which one we will see add the end of this chapter.  
+  
+##### PCA calculations (add b~c~)
+
+To start with this step we have to generate the Rating-Matrix. We will do this directly with a capability of the `recommenderlab` package and use the function `as(<data.frame>,realRatingMatrix)`. This function is converting a data.frame directly in a so called "real-value rating matrix", which is not only converting the data into a matrix but it will store it in a sparse format too (NA values will not be stored but zeros will). With this we can take into consideration that not all movies got rated by all users and the matrix would therefore have a lot of "blanks" (as we found out in chapter "Understand, wrangle and analyse edx dataset").  
+
+```{r Converet to realRatingMatrix, echo=TRUE}
+#Calculate predictions for edx_train set:
+Reg_rating_train <- edx_train %>% 
+  left_join(bi_reg_avg, by='movieId') %>% 
+  left_join(bu_reg_avg, by='userId') %>%
+  mutate(pred = b_i_reg + b_u_reg) %>%
+  .$pred
+
+#Establish Rating-Matrix with Recommenderlab function - first deduct rating-predictions from real
+#ratings so only the residuals remain (not standardized yet):
+PreMatrix_edx_train <- edx_train %>% 
+  select(userId, movieId, rating) %>% 
+  mutate(rating = rating - Reg_rating_train)
+rRM <- as(PreMatrix_edx_train, "realRatingMatrix")
+getRatingMatrix(rRM[1:10,1:10])
+```
+  
+Unfortunately it was not possible to directly do PCA with the `prcomp()` function - it took extremly lot of time (over 12hours - yes, tested it...) and it generated huge datasets. By the way same applied for `svd()`.
+So we will do all next step based on svd methodology and svd calculation cone by `recommender()` function from `recommenderlab`. To do so we first check the default settings of the function parameters:  
+```{r Check model parameters}
+#Store provided methods within recommender function in a variable:
+recommender_models <- recommenderRegistry$get_entries(dataType = "realRatingMatrix")
+
+#Get parameter details from SVD method:
+recommender_models$SVD_realRatingMatrix$parameter
+```
+  
+These defaults settings should be good enough for us so we generate singular value decomposition now:  
+```{r generate SVD, echo=TRUE}
+r_rRM <- Recommender(rRM, method = "SVD")
+str(r_rRM@model$svd)
+```
+  
+As a next step follows some math to reconstruct PCA elements. It is to say that the loadings-Matrix (in `prcomp()` function called rotation) we do already have as it is the same as Matrix "V" from SVD:  
+```{r calculate PCA components, echo=TRUE}
+# 1. Step: Calculate covariance matrix of rRM via SDV parameters V and D:
+cov_M <- sweep(r_rRM@model$svd$v, 2, r_rRM@model$svd$d^2, FUN="*") %*% t(r_rRM@model$svd$v)/(ncol(rRM)-1)
+
+# 2. step: Calculate Variation (sdev^2 value from prcomp() function):
+eig_value <- sapply(i <- 1:ncol(r_rRM@model$svd$v),function(i) {(cov_M[i,]%*%r_rRM@model$svd$v[,i])/
+    r_rRM@model$svd$v[i,i]})
+sdev_calc <- sqrt(eig_value)
+
+# 3. step: Calculate scores (x value from prcomp() function):
+pcaScores <- getRatingMatrix(rRM) %*% r_rRM@model$svd$v
+```
+
+Now let's have a look at the variation parameters ($sdev\_calc^2$) to see what the influence on variation each principal component (PC) has:  
+```{r visualize variation, fig.cap="Image 6: Variation per PC"}
+barplot(eig_value/sum(eig_value), xlab = "PC", ylab = "Percent of total Variance explained", ylim = c(0,1))
+eig_value
+```
+  
+As we see first PC is "dominating" clearly and so with just one PC we are capable to explain almost the whole variation. Therefore we will just consider the first column each of our loading- and scores matrix and only the first value of our variation vector to calculate b~c~ ($b_c = p*q$, while p= user effect and q = principal component):  
+```{r calculate b_c, echo=TRUE}
+b_c <- (pcaScores[,1]) %*% t(r_rRM@model$svd$v[,1]*eig_value[1])
+b_c <- colMeans(b_c)
+```
+  
+Now we add b~c~ in the same approach to the algorithm as we have done it before and get the following RMSE table:  
+```{r 5th RMSE table}
+#Build a data frame so that b_c can be added to edx_test set later: 
+temp_factorization1 <- edx_train %>% group_by(movieId) %>% summarize(movieAverage = mean(rating)) %>% 
+  cbind(b_c)
+
+#Calculate RMSE for 5th intermediate result:
+Fac_rating1 <- edx_test %>% 
+  left_join(bi_reg_avg, by='movieId') %>%
+  left_join(bu_reg_avg, by='userId') %>%
+  left_join(temp_factorization1, by='movieId') %>%
+  mutate(pred = mu + b_i_reg + b_u_reg + b_c) %>%
+  .$pred
+
+RMSE_InterFive <- RMSE(Fac_rating1, edx_test$rating)
+
+#Improvement compared to after Regularization:
+Imp1 <- RMSE_InterFour-RMSE_InterFive
+
+#Visualize the RMSE result:
+rmse_results <- bind_rows(rmse_results,
+                          tibble(method="'PCA'",
+                                     RMSE = RMSE_InterFive, Improvement = Imp1))
+                        
+rmse_results %>% knitr::kable()
+```
+
+##### SVD calculations (add b~i2~)
+First we will again have a look how much of variability is explained with each factor. In SVD we will use vector "D" for this. And again the picture we gained from the PCA analysis that the first factor is explaining almost all of the variation gets confirmed:  
+```{r visualize variability, fig.cap="Image 7: 'cumsum' of factor's variability"}
+#How much variability is explained with first factor:
+FirstFactor <- sum(r_rRM@model$svd$d[1]^2)/sum((r_rRM@model$svd$d)^2)
+
+#Visualize how cumsum of each factor explains variability:
+Variability <- cumsum(r_rRM@model$svd$d^2)/sum((r_rRM@model$svd$d)^2)
+plot(c(0:10),append(0,Variability), type="b", xlab = "Factor", ylab="explained Variability",
+     ylim = c(0,1))
+text(1,0.9, paste("Explained variability \nwith frist factor",round(FirstFactor,3)))
+```
+
+
+Now we will reconstruct the Rating-Matrix and generate our next bias (b~i2~). To reconstruct the Rating-Matrix we will use the following formula:      
+$$ Y = UDV^T $$
+  
+```{r calculate new Rating-Matrix, echo=TRUE}
+#Calculate matrix Y with only with u,d,v of first factor:
+resid <- with(r_rRM@model$svd,(u[, 1, drop=FALSE]*d[1]) %*% t(v[, 1, drop=FALSE]))
+
+#Calculate the means per movieId as cluster bias:
+b_i2 <- colMeans(resid)
+```
+  
+As we can see in the new Rating-Matrix there are no blanks left - in contrast to the initial Rating-Matrix shown above.
+```{r Show new Rating-Matrix}
+resid[1:10, 1:5]
+```
+
+Next step is to generate b~i2~ by calculate the column means from our new Rating-Matrix:
+```{r calculate b_i2, echo=TRUE}
+b_i2 <- colMeans(resid)
+```
+
+So we have everything to calculate RMSE with b~i2~ added to the algorithm INSTEAD b~c~. Here we see the table with the final results (*Attention:* Improvement of "Full rating matrix" is measured against "Regularized" and not against "PCA"):  
+```{r 6th RMSE table}
+#Build a data frame so that b_i2 can be added to edx_test set later: 
+temp_factorization2 <- edx_train %>% group_by(movieId) %>% summarize(movieAverage = mean(rating)) %>% 
+  cbind(b_i2)
+
+#Calculate RMSE for 5th intermediate result based on factorization: 
+
+Fac_rating2 <- edx_test %>% 
+  left_join(bi_reg_avg, by='movieId') %>%
+  left_join(bu_reg_avg, by='userId') %>%
+  left_join(temp_factorization2, by='movieId') %>%
+  mutate(pred = mu + b_i_reg + b_u_reg + b_i2) %>%
+  .$pred
+
+RMSE_InterSix <- RMSE(Fac_rating2, edx_test$rating)
+
+#Improvement compared to after Regularization:
+Imp2 <- RMSE_InterFour-RMSE_InterSix 
+
+#Visualize the RMSE result:
+rmse_results <- bind_rows(rmse_results,
+                          tibble(method= "'Full rating matrix'",
+                                     RMSE = RMSE_InterSix, Improvement = Imp2))
+                        
+rmse_results %>% knitr::kable()
+```
+  
+As we can see the better result we get when we add b~i2~ into our formula and therefore our final algorithm looks like this: $$Y_{i,u,c} = \mu +b_{i}+b_{u}+b_{i2}+\epsilon_{i,u,i2}$$
+
+## Results
+It is time to apply the generated algorithm to the validation set and check the results we get from it:  
+```{r final result, echo=TRUE}
+#Final step: Test the Algorithm against validation set:
+Overall_rating <- validation %>% 
+  left_join(bi_reg_avg, by='movieId') %>% 
+  left_join(bu_reg_avg, by='userId') %>%
+  left_join(temp_factorization2, by='movieId') %>%
+  mutate(pred = mu + b_i_reg + b_u_reg + b_i2) %>%
+  .$pred
+
+RMSE_Overall <- RMSE(Overall_rating, validation$rating)
+
+#Visualize the RMSE result:
+rmse_final <- tibble(RMSE_Validation = RMSE_Overall)
+rmse_final %>% knitr::kable()
+```
+
+With the final RMSE score of **`r RMSE_Overall`** we reached to goal to get a value below the expected 0.86490.  
+Performance-wise it is certainly a result one can work (or at least start) with. But we also have to remain realistic then an average deviation of the effective rating of about 0.864 points is in our case almost as large as one "full rating category" (e.g. rating categories: very poor, poor, average, good, very good) - in today's time where people are already "spoiled" with quite exact recommendation predictions this would probably not enough.  
+  
+## Personal conclusion
+The chosen approach delivered the results we were looking for, which ceratinly is positive. Nevertheless the last step of the algorithm building process was not super satisfying as the PCA decomposition did not brought the results I had anticipated and therefore the efforts I put in it did not really pay off - at least I have now a slight idea about PCA and SVD.... But probably this is also part of a data scentist life: Sometimes you have to fail to get to the next level.  
+In general it is to say that with every additional bias we added to the algorithm it got tougher and thougher to generate additional benefits conserning the RMSE score. For me this is a hint that the chosen approach has its limitations somewhere around the RMSE score we achieved now. And if we want to bring it to a next level (let's say something like RMSE < 0.6) we would have to go for another approach.  
+As potential future work I would see three different things I would like to try out:  
+
+1. I would dig deeper into the last step of my algorithm building process - perhaps also by talking to a subject matter expert in SVD and PCA topics - to see if there is not more I could get from it
+2. It would be interesting to do this exercise once on a powerful "virtual machine" of a cloud solution (AWS, Azure...). Like this I assume we could test out predefined algorithms like logistic regression or gradient boosting
+3. Even though I do not have a clue about it now: It would be interesting to see the achievable results by applying deep learning algorithms - at least there should be enough data to give it a try with the huge MovieLens dataset
+  
+  
+[^1]: http://www2.uaem.mx/r-mirror/web/packages/recommenderlab/recommenderlab.pdf
+[^2]: https://medium.com/@jonathan_hui/machine-learning-singular-value-decomposition-svd-principal-component-analysis-pca-1d45e885e491
+[^3]: https://strata.uga.edu/software/pdf/pcaTutorial.pdf
