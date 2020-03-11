@@ -460,7 +460,7 @@ b_i2 <- colMeans(resid)
 temp_factorization2 <- edx_train %>% group_by(movieId) %>% summarize(movieAverage = mean(rating)) %>% 
   cbind(b_i2)
 
-#Calculate RMSE for 6h intermediate result based on full Rating-Matrix (SVD calculation): 
+#Calculate RMSE for 6th intermediate result based on full Rating-Matrix (SVD calculation): 
 Fac_rating2 <- edx_test %>% 
   left_join(bi_reg_avg, by='movieId') %>%
   left_join(bu_reg_avg, by='userId') %>%
