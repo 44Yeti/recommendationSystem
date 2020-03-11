@@ -1,4 +1,4 @@
-#This script will generate a prediction algorithm for movie ratings based on the movielens dataset
+#This script will generate a prediction algorithm for movie ratings based on the 10M movielens dataset
 
 #####################################
 # Create edx set, validation set ####
@@ -85,6 +85,10 @@ edx1 <- edx1[,c(2,5,6,7,1,3,4)]
 head(edx1)
 
 #----------------------------- Analysing data ---
+# Set settings for Themes:
+myTheme <- theme(axis.title = element_text(size = 14),
+  axis.text.x = element_text(size = 10), 
+  axis.text.y = element_text(size = 10))
 
 #Visualising the Gaps of not rated movies by a graph of 100 random users and 
 #100 random movies:
@@ -105,7 +109,8 @@ edx1 %>%
   geom_histogram(bins = 30, color = "black") + 
   scale_x_log10() + 
   ggtitle("Movies") +
-  labs(x = "Amount of ratings movies got", y="Amount of movies per 'amount of rating'-category")
+  labs(x = "Amount of ratings movies got", y="Amount of movies per 'amount of rating'-category") +
+  myTheme
 
 #First insights: Some users are rating more than others:
 edx1 %>%
@@ -114,14 +119,16 @@ edx1 %>%
   geom_histogram(bins = 30, color = "black") + 
   scale_x_log10() +
   ggtitle("Users") +
-  labs(x = "Number of ratings users have done", y="Amount of users per 'amount of rating'-category")
+  labs(x = "Number of ratings users have done", y="Amount of users per 'amount of rating'-category") +
+  myTheme
 
 #Look at the distribution of the ratings:
 edx1 %>% 
   ggplot(aes(rating)) +
   geom_histogram(binwidth = 0.5, color = "black") + 
   ggtitle("Distribution of Ratings") +
-  labs(x = "Rating scale", y="Amount of entries per Rating option")
+  labs(x = "Rating scale", y="Amount of entries per Rating option") +
+  myTheme
 
 ################### Building Test-, Training sets and RMSE Function ##############
 
@@ -198,7 +205,7 @@ rmse_results %>% knitr::kable()
 
 #----------------------------- Add user bias (b_u) ---
 
-#Calculating b_u (lineare regression would crash my computer so I do an approx.)
+#Calculating b_u
 bu_avg <- edx_train %>% 
   left_join(bi_avg, by='movieId') %>%
   group_by(userId) %>%
@@ -257,7 +264,8 @@ temp_3 %>% ggplot(aes(residual,n)) +
   geom_text(aes(x = 3, y = 40, 
                 label = paste("Median of residuals > |1| =",paste(median(Movie_Count_s$n)))))+
   geom_text(aes(x = 3, y = 140 ,
-                label = paste("Median of total edx_train set =",paste(median(Movie_Count$n))))) 
+                label = paste("Median of total edx_train set =",paste(median(Movie_Count$n)))))+
+  myTheme
 
 #Do we see similar effect for users?
 #To compare: Average number of ratings per user (mean and median) for whole edx_train set:
@@ -283,8 +291,9 @@ temp_3 %>% ggplot(aes(residual,n)) +
   ggtitle("Distribution user ratings (residuals > |1|") +
   geom_text(aes(x = 3.5, y = 15, 
                 label = paste("Median of residuals > |1| =",paste(median(User_Count_s$n)))))+
-  geom_text(aes(x = 3.5, y = 70, 
-                label = paste("Median of total edx_train set =",paste(median(User_Count$n))))) 
+  geom_text(aes(x = 3.5, y = 70,
+                label = paste("Median of total edx_train set =",paste(median(User_Count$n)))))+
+  myTheme
 
 #----------------------------- Add correction by Regularization ---
 
@@ -347,7 +356,7 @@ rmse_results %>% knitr::kable()
 #We test two appraoches:
 # 1. Add p*q (user effects*principal components) based on a PCA decompostion (done via SVD as prcomp() was
 #    far too slow...)
-# 2. Creat a fully filled out Rating Matrix via SDV and take colMean() into our algorithm:
+# 2. Creat a fully filled out Rating Matrix via SDV and take colMeans into our algorithm:
 
 #Calculate predictions for edx_train set:
 Reg_rating_train <- edx_train %>% 
@@ -363,13 +372,8 @@ PreMatrix_edx_train <- edx_train %>%
   mutate(rating = rating - Reg_rating_train)
 rRM <- as(PreMatrix_edx_train, "realRatingMatrix")
 
-# Standardize the rRM Matrix by column
-# rRM_stand <- normalize(rRM, method="Z-score", row=FALSE)
-
 #Visualize the distribution of rRM-Matrix:
-#hist(getRatings(rRM), breaks=100)
-#hist(getRatings(rRM_stand), breaks=100)
-
+hist(getRatings(rRM), breaks=100)
 
 #Analyse provided methods within recommender function:
 recommender_models <- recommenderRegistry$get_entries(dataType = "realRatingMatrix")
@@ -378,11 +382,11 @@ recommender_models
 #Get parameter details from SVD method:
 recommender_models$SVD_realRatingMatrix$parameter
 
-#Calculate recommendation based on SVD method - use default parameter
+#Use Recommender() function with method "SVD" - use default parameter
 r_rRM <- Recommender(rRM, method = "SVD")
 str(r_rRM@model$svd)
 
-#   Start with PCA version:
+#   Start with PCA calculation:
 
 #Creat the PCA values scores (x), loading (rotation) and Variation (sdev^2)
 # 1. Step: Calculate covariance matrix of rRM via SDV parameters:
@@ -398,13 +402,12 @@ sdev_calc <- sqrt(eig_value)
 pcaScores <- getRatingMatrix(rRM) %*% r_rRM@model$svd$v
 
 # Visualize Variation of PCs:
-barplot(eig_value/sum(eig_value), xlab = "PC", ylab = "Percent of total Variance explained", ylim = c(0,1))
-#abline(h=1/ncol(rRM), col="red")
+barplot(eig_value/sum(eig_value), xlab = "PC", ylab = "Percent of total Variance explained", cex.names=0.8,
+        ylim = c(0,1))
 eig_value
 
-#Calculate b_c based on calculated PCA parameters - we only have to calculate with one factor as he is
-#so "dominant":
-#b_c <- (pcaScores[,1]*eig_value[1]) %*% t(r_rRM@model$svd$v[,1]) #*sdev_calc[1]^2
+#Calculate b_c based on calculated PCA parameters - we only have to calculate with one factor as first PC is
+# so "dominant":
 b_c <- (pcaScores[,1]) %*% t(r_rRM@model$svd$v[,1]*eig_value[1])
 b_c <- colMeans(b_c)
 
@@ -423,7 +426,7 @@ Fac_rating1 <- edx_test %>%
 RMSE_InterFive <- RMSE(Fac_rating1, edx_test$rating)
 RMSE_InterFive
 
-#Improvement compared to after Regularization:
+#Improvement compared to RMSE after Regularization:
 Imp1 <- RMSE_InterFour-RMSE_InterFive
 
 #Visualize the RMSE result:
@@ -441,8 +444,8 @@ FirstFactor <- sum(r_rRM@model$svd$d[1]^2)/sum((r_rRM@model$svd$d)^2)
 #Visualize how cumsum of each factor explains variability:
 Variability <- cumsum(r_rRM@model$svd$d^2)/sum((r_rRM@model$svd$d)^2)
 plot(c(0:10),append(0,Variability), type="b", xlab = "Factor", ylab="explained Variability",
-     ylim = c(0,1))
-text(1,0.9, paste("Explained variability \nwith frist factor",round(FirstFactor,3)))
+     ylim = c(0,1), cex.lab=.8)
+text(1,0.9, paste("Explained variability \nwith first factor",round(FirstFactor,3)), cex=.8)
 
 #Calculate matrix Y with only with u,d,v of first factor:
 resid <- with(r_rRM@model$svd,(u[, 1, drop=FALSE]*d[1]) %*% t(v[, 1, drop=FALSE]))
@@ -457,8 +460,7 @@ b_i2 <- colMeans(resid)
 temp_factorization2 <- edx_train %>% group_by(movieId) %>% summarize(movieAverage = mean(rating)) %>% 
   cbind(b_i2)
 
-#Calculate RMSE for 5th intermediate result based on factorization: 
-
+#Calculate RMSE for 6h intermediate result based on full Rating-Matrix (SVD calculation): 
 Fac_rating2 <- edx_test %>% 
   left_join(bi_reg_avg, by='movieId') %>%
   left_join(bu_reg_avg, by='userId') %>%
@@ -469,7 +471,7 @@ Fac_rating2 <- edx_test %>%
 RMSE_InterSix <- RMSE(Fac_rating2, edx_test$rating)
 RMSE_InterSix
 
-#Improvement compared to after Regularization:
+#Improvement compared to RMSE after Regularization:
 Imp2 <- RMSE_InterFour-RMSE_InterSix 
 
 #Visualize the RMSE result:
